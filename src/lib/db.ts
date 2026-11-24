@@ -2,7 +2,7 @@ import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import { dataDir } from "./paths";
-import { ensureSeed } from "./seed";
+import { ensureSeed, migrateArt } from "./seed";
 
 // node:sqlite は Node.js 22.13 以降に標準で入っている SQLite。
 // 追加のネイティブモジュールが不要なので、手元のPCでもそのまま動く。
@@ -133,6 +133,7 @@ export function db(): Db {
     const conn = openDb();
     g.__tryonDb = conn;
     ensureSeed(conn);
+    migrateArt(conn);
   }
   return g.__tryonDb;
 }

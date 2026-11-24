@@ -133,9 +133,9 @@ function frame(inner: string, viewBox: string, bg: string): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet">${bg}${inner}</svg>`;
 }
 
-const STUDIO_BG = `<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f5f2ed"/><stop offset="0.8" stop-color="#e9e4dc"/><stop offset="1" stop-color="#ddd6cb"/></linearGradient>
-<radialGradient id="sh" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#000" stop-opacity="0.18"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient></defs>
-<rect width="600" height="1000" fill="url(#bg)"/><ellipse cx="300" cy="${FLOOR - 4}" rx="140" ry="22" fill="url(#sh)"/>`;
+// 背景は透明にして、試着室の白い背景にそのまま馴染ませる（足元の影だけ描く）
+const STUDIO_BG = `<defs><radialGradient id="sh" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#000" stop-opacity="0.18"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient></defs>
+<ellipse cx="300" cy="${FLOOR - 4}" rx="140" ry="22" fill="url(#sh)"/>`;
 
 /** モデル×アウター×パンツの組み合わせを1枚のSVGにする */
 export function renderLookSvg(
@@ -157,7 +157,7 @@ export function renderLookSvg(
 
 /** 商品の平置き風画像（ゴーストマネキン風） */
 export function renderGarmentSvg(p: Pick<Product, "category" | "style" | "color_hex">): string {
-  const bg = `<rect x="-1000" y="-1000" width="3000" height="3000" fill="#f3f1ee"/>`;
+  const bg = ""; // 背景なし（商品だけを浮かべて見せる）
   if (p.category === "outer") {
     const hem = OUTER_HEM[(p.style in OUTER_HEM ? p.style : "jacket") as OuterStyle];
     const h = hem - 170;

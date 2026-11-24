@@ -1,17 +1,15 @@
 "use client";
 
 // 試着室ビュー（仕様 F-FIT-01〜04）。
-// 中央にAIモデル、左にアウター、右にパンツ。選ぶと事前生成済みの画像に即座に切り替わる。
+// 白い背景の中央に大きくAIモデル。左右に商品画像だけを浮かべて並べ、上段がアウター、下段がパンツ。
+// 選ぶと事前生成済みの着用画像にすぐ切り替わる。表示する文字は最小限にしている。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Catalog, PublicLook, PublicProduct } from "@/lib/public-api";
 
 // 身長の調整範囲（cm）
 export const HEIGHT_MIN = 150;
 export const HEIGHT_MAX = 190;
-// 着用画像の縮尺: 画像の下から5%が足元、身長1cmあたり画像の高さの0.4911%（仮エンジンの描画と一致）
-const FEET_FROM_TOP = 0.95;
-const PER_CM = 0.004911;
 
 /** 身長に合わせて着用画像を何倍に表示するか（足元を基準に拡大・縮小） */
 export function heightScale(targetCm: number, modelCm: number): number {
@@ -23,6 +21,13 @@ function comboKey(modelId: string, outerId: string | null, bottomId: string | nu
 }
 
 const yen = (n: number) => `¥${n.toLocaleString("ja-JP")}`;
+const clampHeight = (cm: number) => Math.min(HEIGHT_MAX, Math.max(HEIGHT_MIN, cm));
+
+/** 一覧を左右に振り分ける（左に前半、右に後半） */
+function split<T>(items: T[]): [T[], T[]] {
+  const half = Math.ceil(items.length / 2);
+  return [items.slice(0, half), items.slice(half)];
+}
 
 function sessionId(): string {
   try {
@@ -37,6 +42,11 @@ function sessionId(): string {
   }
 }
 
+interface CartLine {
+  product: PublicProduct;
+  size: string;
+}
+
 interface Props {
   catalog: Catalog;
   initial: { outerCode: string | null; bottomsCode: string | null; modelId: string | null };
@@ -45,8 +55,9 @@ interface Props {
 export default function FittingRoom({ catalog, initial }: Props) {
   const { models, outers, bottoms, tenant } = catalog;
   const [looks, setLooks] = useState<Record<string, PublicLook>>(catalog.looks);
-  const [modelId, setModelId] = useState(
-    models.find((m) => m.id === initial.modelId)?.id ?? models[0]?.id ?? "",
+  const [modelId, setModelId] = useState(models.find((m) => m.id === initial.modelId)?.id ?? models[0]?.id ?? "");
+  const [heightCm, setHeightCm] = useState(() =>
+    clampHeight(models.find((m) => m.id === initial.modelId)?.height_cm ?? models[0]?.height_cm ?? 170),
   );
   const [outerId, setOuterId] = useState<string | null>(
     outers.find((p) => p.external_code === initial.outerCode)?.id ?? outers[0]?.id ?? null,
@@ -54,10 +65,9 @@ export default function FittingRoom({ catalog, initial }: Props) {
   const [bottomId, setBottomId] = useState<string | null>(
     bottoms.find((p) => p.external_code === initial.bottomsCode)?.id ?? bottoms[0]?.id ?? null,
   );
-  const [heightCm, setHeightCm] = useState(
-    () => models.find((m) => m.id === initial.modelId)?.height_cm ?? models[0]?.height_cm ?? 170,
-  );
   const [detail, setDetail] = useState<PublicProduct | null>(null);
+  const [cart, setCart] = useState<CartLine[]>([]);
+  const [cartOpen, setCartOpen] = useState(false);
   const [pending, setPending] = useState<string | null>(null); // 生成待ちの combo_key
   const [failed, setFailed] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -70,11 +80,10 @@ export default function FittingRoom({ catalog, initial }: Props) {
 
   const track = useCallback(
     (type: string, extra: { product_id?: string; look_id?: string } = {}) => {
-      const body = JSON.stringify({ type, session_id: sessionId(), ...extra });
       fetch(`/api/v1/t/${tenant.slug}/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body,
+        body: JSON.stringify({ type, session_id: sessionId(), ...extra }),
         keepalive: true,
       }).catch(() => {});
     },
@@ -88,15 +97,14 @@ export default function FittingRoom({ catalog, initial }: Props) {
 
   // 同じモデルの生成済み画像を先読みして、切り替えを一瞬にする
   useEffect(() => {
-    const urls = Object.values(looks)
+    const imgs = Object.values(looks)
       .filter((l) => l.combo_key.startsWith(modelId + "|") && l.image_url)
-      .map((l) => l.image_url!);
-    const imgs = urls.map((u) => {
-      const img = new Image();
-      img.decoding = "async";
-      img.src = u;
-      return img;
-    });
+      .map((l) => {
+        const img = new Image();
+        img.decoding = "async";
+        img.src = l.image_url!;
+        return img;
+      });
     return () => imgs.forEach((i) => (i.src = ""));
   }, [modelId, looks]);
 
@@ -143,44 +151,36 @@ export default function FittingRoom({ catalog, initial }: Props) {
     };
   }, [key, look, modelId, outerId, bottomId, tenant.slug]);
 
-  // スマホでは詳細パネルが着用画像を隠してしまうので、選んだだけでは開かない
-  const isNarrow = () => typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches;
-  const selectOuter = (p: PublicProduct | null) => {
-    setOuterId(p?.id ?? null);
-    if (p) {
-      track("product_select", { product_id: p.id });
-      if (!isNarrow() || detail) openDetail(p);
-    } else setDetail(null);
+  // 選んでいるアウターをもう一度押すと脱ぐ（アウターなし）
+  const pickOuter = (p: PublicProduct) => {
+    const next = p.id === outerId ? null : p.id;
+    setOuterId(next);
+    if (next) track("product_select", { product_id: p.id });
   };
-  const selectBottoms = (p: PublicProduct) => {
+  const pickBottoms = (p: PublicProduct) => {
     setBottomId(p.id);
     track("product_select", { product_id: p.id });
-    if (!isNarrow() || detail) openDetail(p);
   };
   const openDetail = (p: PublicProduct) => {
+    setCartOpen(false);
     setDetail(p);
     track("detail_open", { product_id: p.id });
   };
 
   const addToCart = (p: PublicProduct, size: string) => {
     track("add_to_cart", { product_id: p.id });
-    const message = { type: "tryon:add_to_cart", external_code: p.external_code, size, name: p.name, price_jpy: p.price_jpy };
+    setCart((c) => [...c, { product: p, size }]);
     if (embedded.current) {
       // 埋め込み先のECサイトに通知する。実際のカート投入はEC側で行う（仕様 F-WGT-07）
-      window.parent.postMessage(message, "*");
-      setToast(`${p.name}（${size}）をカートに追加しました`);
-    } else {
-      setToast(`カートに追加しました（デモ表示）: ${p.name} ${size}`);
+      window.parent.postMessage(
+        { type: "tryon:add_to_cart", external_code: p.external_code, size, name: p.name, price_jpy: p.price_jpy },
+        "*",
+      );
     }
-    setTimeout(() => setToast(null), 3000);
+    setDetail(null);
+    setToast(`カートに入れました: ${p.name}（${size}）`);
+    setTimeout(() => setToast(null), 2500);
   };
-
-  const selectedOuter = outers.find((p) => p.id === outerId) ?? null;
-  const selectedBottoms = bottoms.find((p) => p.id === bottomId) ?? null;
-  const outfitTotal = useMemo(
-    () => (selectedOuter?.price_jpy ?? 0) + (selectedBottoms?.price_jpy ?? 0),
-    [selectedOuter, selectedBottoms],
-  );
 
   if (!model || bottoms.length === 0) {
     return (
@@ -192,38 +192,102 @@ export default function FittingRoom({ catalog, initial }: Props) {
 
   const busy = pending === key && !look;
   const scale = heightScale(heightCm, model.height_cm);
-  // 選んだ身長の頭の高さ（ステージ上端からの割合）。目盛り線に使う
-  const headTop = FEET_FROM_TOP - heightCm * PER_CM;
-  const detailPanel = detail && (
-    <DetailPanel
-      key={detail.id}
-      p={detail}
-      defaultSize={model.size_worn}
-      onClose={() => setDetail(null)}
-      onCart={addToCart}
-      onLink={() => track("product_link", { product_id: detail.id })}
-    />
+  const selectedOuter = outers.find((p) => p.id === outerId) ?? null;
+  const selectedBottoms = bottoms.find((p) => p.id === bottomId) ?? null;
+  const [outerL, outerR] = split(outers);
+  const [bottomL, bottomR] = split(bottoms);
+
+  const shelf = (items: PublicProduct[], selected: string | null, onPick: (p: PublicProduct) => void, label: string) => (
+    <div className="shelf" role="group" aria-label={label}>
+      {items.map((p) => (
+        <button
+          key={p.id}
+          className={`piece ${p.id === selected ? "on" : ""}`}
+          onClick={() => onPick(p)}
+          aria-pressed={p.id === selected}
+          aria-label={p.name}
+          title={p.name}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {p.image_url && <img src={p.image_url} alt="" draggable={false} />}
+        </button>
+      ))}
+    </div>
   );
 
   return (
-    <div className="room">
-      <header className="room-header">
-        <div className="room-brand">
-          <span className="room-title">FITTING ROOM</span>
-          <span className="room-tenant">{tenant.name}</span>
+    <div className="fr">
+      <header className="fr-head">
+        <h1 className="fr-title">{tenant.name}</h1>
+        <button className="fr-cart" onClick={() => { setDetail(null); setCartOpen((o) => !o); }} aria-expanded={cartOpen}>
+          カート <span className="fr-cart-n">{cart.length}</span>
+        </button>
+      </header>
+
+      <div className="fr-side fr-left">
+        {shelf(outerL, outerId, pickOuter, "アウター")}
+        {shelf(bottomL, bottomId, pickBottoms, "パンツ")}
+      </div>
+
+      <main className="fr-stage" aria-live="polite">
+        {shownUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            key={shownUrl}
+            src={shownUrl}
+            alt={`${model.name}の着用イメージ`}
+            className={`fr-model ${busy ? "dim" : ""}`}
+            style={{ transform: `scale(${scale})` }}
+          />
+        ) : (
+          model.image_url && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={model.image_url} alt={model.name} className="fr-model dim" style={{ transform: `scale(${scale})` }} />
+          )
+        )}
+        {busy && <div className="fr-spinner" aria-label="生成中" />}
+        {failed && !busy && !look && <p className="fr-msg">{failed}</p>}
+      </main>
+
+      <div className="fr-side fr-right">
+        {shelf(outerR, outerId, pickOuter, "アウター")}
+        {shelf(bottomR, bottomId, pickBottoms, "パンツ")}
+      </div>
+
+      {/* スマホでは左右に分けず、アウターとパンツを1列ずつ横スクロールで並べる */}
+      <div className="fr-mobile">
+        {shelf(outers, outerId, pickOuter, "アウター")}
+        {shelf(bottoms, bottomId, pickBottoms, "パンツ")}
+      </div>
+
+      <footer className="fr-foot">
+        <p className="fr-note">
+          AIによる生成イメージです。実際の色・サイズ感と異なる場合があります。
+        </p>
+        <div className="fr-wearing">
+          <button className="fr-label" onClick={() => selectedOuter && openDetail(selectedOuter)} disabled={!selectedOuter}>
+            <span className="k">アウター</span>
+            {selectedOuter?.name ?? "なし"}
+          </button>
+          {selectedBottoms && (
+            <button className="fr-label" onClick={() => openDetail(selectedBottoms)}>
+              <span className="k">パンツ</span>
+              {selectedBottoms.name}
+            </button>
+          )}
         </div>
-        <div className="room-controls">
+        <div className="fr-height">
           {models.length > 1 && (
-            <div className="model-switch" role="radiogroup" aria-label="モデルを選ぶ">
+            <div className="fr-models" role="radiogroup" aria-label="モデル">
               {models.map((m) => (
                 <button
                   key={m.id}
                   role="radio"
                   aria-checked={m.id === modelId}
-                  className={`chip ${m.id === modelId ? "on" : ""}`}
+                  className={m.id === modelId ? "on" : ""}
                   onClick={() => {
                     setModelId(m.id);
-                    setHeightCm(Math.min(HEIGHT_MAX, Math.max(HEIGHT_MIN, m.height_cm)));
+                    setHeightCm(clampHeight(m.height_cm));
                   }}
                 >
                   {m.name}
@@ -231,102 +295,40 @@ export default function FittingRoom({ catalog, initial }: Props) {
               ))}
             </div>
           )}
-          <label className="height-control">
-            <span>身長</span>
+          <label>
+            <span className="row">
+              <span className="k">モデルの身長</span>
+              <output>{heightCm}cm</output>
+            </span>
             <input
               type="range"
               min={HEIGHT_MIN}
               max={HEIGHT_MAX}
-              step={1}
               value={heightCm}
               onChange={(e) => setHeightCm(Number(e.target.value))}
               aria-valuetext={`${heightCm}cm`}
             />
-            <output>{heightCm}cm</output>
+            <span className="row scale">
+              <span>{HEIGHT_MIN}</span>
+              <span>{(HEIGHT_MIN + HEIGHT_MAX) / 2}</span>
+              <span>{HEIGHT_MAX}</span>
+            </span>
           </label>
         </div>
-      </header>
+      </footer>
 
-      <div className="side side-outer">
-      <section className="rail" aria-label="アウター">
-        <h2 className="rail-title">アウター</h2>
-        <div className="rail-items">
-          <button className={`item none ${outerId === null ? "on" : ""}`} onClick={() => selectOuter(null)} aria-pressed={outerId === null}>
-            <span className="item-none">なし</span>
-            <span className="item-name">アウターなし</span>
-          </button>
-          {outers.map((p) => (
-            <ProductCard key={p.id} p={p} on={p.id === outerId} onClick={() => selectOuter(p)} />
-          ))}
-        </div>
-      </section>
-      {detail?.category === "outer" && detailPanel}
-      </div>
+      {detail && (
+        <DetailPanel
+          key={detail.id}
+          p={detail}
+          defaultSize={model.size_worn}
+          onClose={() => setDetail(null)}
+          onCart={addToCart}
+          onLink={() => track("product_link", { product_id: detail.id })}
+        />
+      )}
 
-      <section className="stage" aria-live="polite">
-        <div className="stage-frame">
-          {shownUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={shownUrl}
-              alt={`${model.name}の着用イメージ`}
-              className={`stage-img ${busy ? "dim" : ""}`}
-              style={{ transform: `scale(${scale})` }}
-              key={shownUrl}
-            />
-          ) : (
-            // eslint-disable-next-line @next/next/no-img-element
-            model.image_url && (
-              <img src={model.image_url} alt={model.name} className="stage-img dim" style={{ transform: `scale(${scale})` }} />
-            )
-          )}
-          <div className="ruler" aria-hidden>
-            {[150, 160, 170, 180, 190].map((cm) => (
-              <span key={cm} className="ruler-tick" style={{ top: `${(FEET_FROM_TOP - cm * PER_CM) * 100}%` }}>
-                {cm}
-              </span>
-            ))}
-            <span className="ruler-head" style={{ top: `${headTop * 100}%` }} />
-          </div>
-          {busy && (
-            <div className="stage-overlay">
-              <div className="spinner" aria-hidden />
-              <p>この組み合わせを生成しています…</p>
-            </div>
-          )}
-          {failed && !busy && !look && (
-            <div className="stage-overlay">
-              <p>{failed}</p>
-            </div>
-          )}
-        </div>
-        <p className="model-note">
-          AI生成モデル（身長{heightCm}cm想定・{model.size_worn}サイズ着用）
-        </p>
-        <p className="disclaimer">AI生成イメージです。実際の色・サイズ感と異なる場合があります。</p>
-        <div className="wearing" aria-label="着用中の商品">
-          {[selectedOuter, selectedBottoms].filter((p): p is PublicProduct => !!p).map((p) => (
-            <button key={p.id} className="wearing-item" onClick={() => openDetail(p)}>
-              <span className="swatch" style={{ background: p.color_hex }} />
-              <span className="wearing-name">{p.name}</span>
-              <span className="wearing-more">詳細</span>
-            </button>
-          ))}
-        </div>
-        {outfitTotal > 0 && <p className="outfit-total">このコーディネート合計 {yen(outfitTotal)}（税込）</p>}
-      </section>
-
-      <div className="side side-bottoms">
-      <section className="rail" aria-label="パンツ">
-        <h2 className="rail-title">パンツ</h2>
-        <div className="rail-items">
-          {bottoms.map((p) => (
-            <ProductCard key={p.id} p={p} on={p.id === bottomId} onClick={() => selectBottoms(p)} />
-          ))}
-        </div>
-      </section>
-      {detail?.category === "bottoms" && detailPanel}
-      </div>
+      {cartOpen && <CartPanel lines={cart} onClose={() => setCartOpen(false)} onRemove={(i) => setCart((c) => c.filter((_, j) => j !== i))} />}
 
       {toast && (
         <div className="toast" role="status">
@@ -337,15 +339,12 @@ export default function FittingRoom({ catalog, initial }: Props) {
   );
 }
 
-function ProductCard({ p, on, onClick }: { p: PublicProduct; on: boolean; onClick: () => void }) {
-  return (
-    <button className={`item ${on ? "on" : ""}`} onClick={onClick} aria-pressed={on}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      {p.image_url ? <img src={p.image_url} alt="" className="item-img" loading="lazy" /> : <span className="item-img" />}
-      <span className="item-name">{p.name}</span>
-      <span className="item-price">{yen(p.price_jpy)}</span>
-    </button>
-  );
+function useEscape(onClose: () => void) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 }
 
 function DetailPanel({
@@ -361,80 +360,95 @@ function DetailPanel({
   onCart: (p: PublicProduct, size: string) => void;
   onLink: () => void;
 }) {
-  const [tab, setTab] = useState<"detail" | "features">("detail");
   const [size, setSize] = useState(p.sizes.includes(defaultSize) ? defaultSize : (p.sizes[0] ?? ""));
+  const [more, setMore] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    closeRef.current?.focus({ preventScroll: true });
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEffect(() => closeRef.current?.focus({ preventScroll: true }), []);
+  useEscape(onClose);
 
   return (
-    <aside className="detail" aria-label={`${p.name}の詳細`}>
-      <button ref={closeRef} className="detail-close" onClick={onClose} aria-label="詳細を閉じる">
+    <aside className="sheet" aria-label={`${p.name}の詳細`}>
+      <button ref={closeRef} className="sheet-close" onClick={onClose} aria-label="閉じる">
         ×
       </button>
-      <p className="detail-cat">{p.category === "outer" ? "アウター" : "パンツ"}</p>
-      <h2 className="detail-name">{p.name}</h2>
-      {p.tagline && <p className="detail-tagline">{p.tagline}</p>}
-      <p className="detail-price">
-        {yen(p.price_jpy)}
-        <span className="tax">（税込）</span>
-      </p>
-
-      <div className="detail-sizes" role="radiogroup" aria-label="サイズ">
-        <span className="label">サイズ</span>
+      <h2 className="sheet-name">{p.name}</h2>
+      <p className="sheet-price">{yen(p.price_jpy)}</p>
+      <div className="sheet-sizes" role="radiogroup" aria-label="サイズ">
         {p.sizes.map((s) => (
-          <button key={s} role="radio" aria-checked={s === size} className={`size ${s === size ? "on" : ""}`} onClick={() => setSize(s)}>
+          <button key={s} role="radio" aria-checked={s === size} className={s === size ? "on" : ""} onClick={() => setSize(s)}>
             {s}
           </button>
         ))}
       </div>
-
-      <div className="tabs" role="tablist">
-        <button role="tab" aria-selected={tab === "detail"} className={tab === "detail" ? "on" : ""} onClick={() => setTab("detail")}>
-          詳細
-        </button>
-        <button role="tab" aria-selected={tab === "features"} className={tab === "features" ? "on" : ""} onClick={() => setTab("features")}>
-          特徴
-        </button>
-      </div>
-      {tab === "detail" ? (
-        <div role="tabpanel">
-          {p.description && <p className="detail-desc">{p.description}</p>}
-          <dl className="spec">
+      <button className="btn primary wide" onClick={() => onCart(p, size)} disabled={!size}>
+        カートに入れる
+      </button>
+      <button className="sheet-more" onClick={() => setMore((m) => !m)} aria-expanded={more}>
+        {more ? "商品情報を閉じる" : "商品情報を見る"}
+      </button>
+      {more && (
+        <div className="sheet-info">
+          {p.description && <p>{p.description}</p>}
+          <dl>
             <dt>カラー</dt>
-            <dd>
-              <span className="swatch" style={{ background: p.color_hex }} /> {p.color_name || "-"}
-            </dd>
+            <dd>{p.color_name || "-"}</dd>
             <dt>フィット</dt>
             <dd>{p.fit || "-"}</dd>
             <dt>素材</dt>
             <dd>{p.material || "-"}</dd>
             <dt>お手入れ</dt>
             <dd>{p.care || "-"}</dd>
-            <dt>商品コード</dt>
-            <dd>{p.external_code}</dd>
           </dl>
+          {p.features.length > 0 && (
+            <ul>
+              {p.features.map((f) => (
+                <li key={f}>{f}</li>
+              ))}
+            </ul>
+          )}
+          {p.product_url && (
+            <a href={p.product_url} target="_blank" rel="noopener noreferrer" onClick={onLink}>
+              商品ページへ
+            </a>
+          )}
         </div>
-      ) : (
-        <ul role="tabpanel" className="features">
-          {p.features.length ? p.features.map((f) => <li key={f}>{f}</li>) : <li>登録されていません</li>}
-        </ul>
       )}
+    </aside>
+  );
+}
 
-      <div className="detail-actions">
-        <button className="btn primary wide" onClick={() => onCart(p, size)} disabled={!size}>
-          カートに入れる
-        </button>
-        {p.product_url && (
-          <a className="btn wide" href={p.product_url} target="_blank" rel="noopener noreferrer" onClick={onLink}>
-            商品ページを見る
-          </a>
-        )}
-      </div>
+function CartPanel({ lines, onClose, onRemove }: { lines: CartLine[]; onClose: () => void; onRemove: (i: number) => void }) {
+  useEscape(onClose);
+  const total = lines.reduce((s, l) => s + l.product.price_jpy, 0);
+  return (
+    <aside className="sheet" aria-label="カート">
+      <button className="sheet-close" onClick={onClose} aria-label="閉じる">
+        ×
+      </button>
+      <h2 className="sheet-name">カート</h2>
+      {lines.length === 0 ? (
+        <p className="muted">まだ何も入っていません。</p>
+      ) : (
+        <>
+          <ul className="cart-lines">
+            {lines.map((l, i) => (
+              <li key={i}>
+                <span>
+                  {l.product.name}
+                  <span className="muted">（{l.size}）</span>
+                </span>
+                <span>{yen(l.product.price_jpy)}</span>
+                <button onClick={() => onRemove(i)} aria-label={`${l.product.name}を削除`}>
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="cart-total">
+            合計 <strong>{yen(total)}</strong>
+          </p>
+        </>
+      )}
     </aside>
   );
 }

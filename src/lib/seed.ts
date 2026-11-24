@@ -110,4 +110,35 @@ export function ensureSeed(conn: Db) {
   });
   // デモはすぐ触れるように、全組み合わせを生成しておく
   setTimeout(() => generation.pregenerateAll(tenant.id), 0);
+  conn.exec(`PRAGMA user_version = ${ART_VERSION}`);
+}
+
+/** 仮エンジンの描画を変えたときの版数。上がると、手元の仮画像を自動で描き直す */
+export const ART_VERSION = 2;
+
+/**
+ * 既存データの仮画像（SVG）を新しい描画で作り直す。
+ * 実物の写真（PNG/JPEG/WebP）や、本物のエンジンで作った画像には触らない。
+ */
+export function migrateArt(conn: Db) {
+  const { user_version } = conn.prepare("PRAGMA user_version").get() as { user_version: number };
+  if (user_version >= ART_VERSION) return;
+  const stamp = Date.now();
+  for (const t of repo.listTenants()) {
+    for (const p of repo.listProducts(t.id)) {
+      if (!p.image_key?.endsWith(".svg")) continue;
+      const key = `tenants/${t.id}/products/${p.id}-${stamp}.svg`;
+      putObject(key, renderGarmentSvg(p));
+      conn.prepare("UPDATE products SET image_key=? WHERE id=?").run(key, p.id);
+    }
+    for (const m of repo.listModels(t.id)) {
+      if (!m.image_key?.endsWith(".svg")) continue;
+      const key = `tenants/${t.id}/models/${m.id}-${stamp}.svg`;
+      putObject(key, renderModelSvg(m));
+      conn.prepare("UPDATE models SET image_key=? WHERE id=?").run(key, m.id);
+    }
+    conn.prepare("DELETE FROM looks WHERE tenant_id=? AND image_key LIKE '%.svg'").run(t.id);
+    setTimeout(() => generation.pregenerateAll(t.id), 0);
+  }
+  conn.exec(`PRAGMA user_version = ${ART_VERSION}`);
 }
