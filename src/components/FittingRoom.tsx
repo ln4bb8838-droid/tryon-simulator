@@ -6,7 +6,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Catalog, PublicLook, PublicProduct } from "@/lib/public-api";
 
-const NO_OUTER = "__none__";
+// 身長の調整範囲（cm）
+export const HEIGHT_MIN = 150;
+export const HEIGHT_MAX = 190;
+// 着用画像の縮尺: 画像の下から5%が足元、身長1cmあたり画像の高さの0.4911%（仮エンジンの描画と一致）
+const FEET_FROM_TOP = 0.95;
+const PER_CM = 0.004911;
+
+/** 身長に合わせて着用画像を何倍に表示するか（足元を基準に拡大・縮小） */
+export function heightScale(targetCm: number, modelCm: number): number {
+  return targetCm / modelCm;
+}
 
 function comboKey(modelId: string, outerId: string | null, bottomId: string | null) {
   return `${modelId}|${outerId ?? "-"}|${bottomId ?? "-"}`;
@@ -43,6 +53,9 @@ export default function FittingRoom({ catalog, initial }: Props) {
   );
   const [bottomId, setBottomId] = useState<string | null>(
     bottoms.find((p) => p.external_code === initial.bottomsCode)?.id ?? bottoms[0]?.id ?? null,
+  );
+  const [heightCm, setHeightCm] = useState(
+    () => models.find((m) => m.id === initial.modelId)?.height_cm ?? models[0]?.height_cm ?? 170,
   );
   const [detail, setDetail] = useState<PublicProduct | null>(null);
   const [pending, setPending] = useState<string | null>(null); // 生成待ちの combo_key
@@ -178,32 +191,64 @@ export default function FittingRoom({ catalog, initial }: Props) {
   }
 
   const busy = pending === key && !look;
+  const scale = heightScale(heightCm, model.height_cm);
+  // 選んだ身長の頭の高さ（ステージ上端からの割合）。目盛り線に使う
+  const headTop = FEET_FROM_TOP - heightCm * PER_CM;
+  const detailPanel = detail && (
+    <DetailPanel
+      key={detail.id}
+      p={detail}
+      defaultSize={model.size_worn}
+      onClose={() => setDetail(null)}
+      onCart={addToCart}
+      onLink={() => track("product_link", { product_id: detail.id })}
+    />
+  );
 
   return (
-    <div className={`room ${detail ? "with-detail" : ""}`}>
+    <div className="room">
       <header className="room-header">
         <div className="room-brand">
           <span className="room-title">FITTING ROOM</span>
           <span className="room-tenant">{tenant.name}</span>
         </div>
-        {models.length > 1 && (
-          <div className="model-switch" role="radiogroup" aria-label="モデルを選ぶ">
-            {models.map((m) => (
-              <button
-                key={m.id}
-                role="radio"
-                aria-checked={m.id === modelId}
-                className={`chip ${m.id === modelId ? "on" : ""}`}
-                onClick={() => setModelId(m.id)}
-              >
-                {m.name}・{m.height_cm}cm
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="room-controls">
+          {models.length > 1 && (
+            <div className="model-switch" role="radiogroup" aria-label="モデルを選ぶ">
+              {models.map((m) => (
+                <button
+                  key={m.id}
+                  role="radio"
+                  aria-checked={m.id === modelId}
+                  className={`chip ${m.id === modelId ? "on" : ""}`}
+                  onClick={() => {
+                    setModelId(m.id);
+                    setHeightCm(Math.min(HEIGHT_MAX, Math.max(HEIGHT_MIN, m.height_cm)));
+                  }}
+                >
+                  {m.name}
+                </button>
+              ))}
+            </div>
+          )}
+          <label className="height-control">
+            <span>身長</span>
+            <input
+              type="range"
+              min={HEIGHT_MIN}
+              max={HEIGHT_MAX}
+              step={1}
+              value={heightCm}
+              onChange={(e) => setHeightCm(Number(e.target.value))}
+              aria-valuetext={`${heightCm}cm`}
+            />
+            <output>{heightCm}cm</output>
+          </label>
+        </div>
       </header>
 
-      <section className="rail rail-outer" aria-label="アウター">
+      <div className="side side-outer">
+      <section className="rail" aria-label="アウター">
         <h2 className="rail-title">アウター</h2>
         <div className="rail-items">
           <button className={`item none ${outerId === null ? "on" : ""}`} onClick={() => selectOuter(null)} aria-pressed={outerId === null}>
@@ -215,6 +260,8 @@ export default function FittingRoom({ catalog, initial }: Props) {
           ))}
         </div>
       </section>
+      {detail?.category === "outer" && detailPanel}
+      </div>
 
       <section className="stage" aria-live="polite">
         <div className="stage-frame">
@@ -224,12 +271,23 @@ export default function FittingRoom({ catalog, initial }: Props) {
               src={shownUrl}
               alt={`${model.name}の着用イメージ`}
               className={`stage-img ${busy ? "dim" : ""}`}
+              style={{ transform: `scale(${scale})` }}
               key={shownUrl}
             />
           ) : (
             // eslint-disable-next-line @next/next/no-img-element
-            model.image_url && <img src={model.image_url} alt={model.name} className="stage-img dim" />
+            model.image_url && (
+              <img src={model.image_url} alt={model.name} className="stage-img dim" style={{ transform: `scale(${scale})` }} />
+            )
           )}
+          <div className="ruler" aria-hidden>
+            {[150, 160, 170, 180, 190].map((cm) => (
+              <span key={cm} className="ruler-tick" style={{ top: `${(FEET_FROM_TOP - cm * PER_CM) * 100}%` }}>
+                {cm}
+              </span>
+            ))}
+            <span className="ruler-head" style={{ top: `${headTop * 100}%` }} />
+          </div>
           {busy && (
             <div className="stage-overlay">
               <div className="spinner" aria-hidden />
@@ -243,7 +301,7 @@ export default function FittingRoom({ catalog, initial }: Props) {
           )}
         </div>
         <p className="model-note">
-          AI生成モデル（身長{model.height_cm}cm想定・{model.size_worn}サイズ着用）
+          AI生成モデル（身長{heightCm}cm想定・{model.size_worn}サイズ着用）
         </p>
         <p className="disclaimer">AI生成イメージです。実際の色・サイズ感と異なる場合があります。</p>
         <div className="wearing" aria-label="着用中の商品">
@@ -258,7 +316,8 @@ export default function FittingRoom({ catalog, initial }: Props) {
         {outfitTotal > 0 && <p className="outfit-total">このコーディネート合計 {yen(outfitTotal)}（税込）</p>}
       </section>
 
-      <section className="rail rail-bottoms" aria-label="パンツ">
+      <div className="side side-bottoms">
+      <section className="rail" aria-label="パンツ">
         <h2 className="rail-title">パンツ</h2>
         <div className="rail-items">
           {bottoms.map((p) => (
@@ -266,17 +325,8 @@ export default function FittingRoom({ catalog, initial }: Props) {
           ))}
         </div>
       </section>
-
-      {detail && (
-        <DetailPanel
-          key={detail.id}
-          p={detail}
-          defaultSize={model.size_worn}
-          onClose={() => setDetail(null)}
-          onCart={addToCart}
-          onLink={() => track("product_link", { product_id: detail.id })}
-        />
-      )}
+      {detail?.category === "bottoms" && detailPanel}
+      </div>
 
       {toast && (
         <div className="toast" role="status">

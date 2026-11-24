@@ -40,9 +40,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* ---------- 試着室 ---------- */
 .room {
   display: grid;
-  grid-template-columns: minmax(200px, 1fr) minmax(320px, 520px) minmax(200px, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 520px) minmax(0, 1fr);
   grid-template-rows: auto 1fr;
   grid-template-areas: "head head head" "outer stage bottoms";
+  align-items: start;
   min-height: 100vh; gap: 0 24px; padding: 0 24px 24px;
 }
 .room-header {
@@ -56,11 +57,18 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 5px 14px; font-size: 13px; }
 .chip.on { border-color: var(--ink); background: var(--ink); color: #fff; }
 
+/* 左右の列: 上に商品の横一列、下に選んだ商品の詳細。中央の着用画像の大きさは変わらない */
+.side { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.side-outer { grid-area: outer; }
+.side-bottoms { grid-area: bottoms; }
 .rail { min-width: 0; }
-.rail-outer { grid-area: outer; }
-.rail-bottoms { grid-area: bottoms; }
 .rail-title { font-size: 12px; letter-spacing: 0.2em; color: var(--muted); font-weight: 600; margin: 0 0 10px; }
-.rail-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 148px)); gap: 12px; }
+/* 商品は横一列に並べて横スクロール（端の商品が少し見切れて、続きがあると分かる） */
+.rail-items {
+  display: flex; gap: 12px; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity;
+  padding: 2px 2px 10px; scrollbar-width: thin;
+}
+.rail-items > .item { flex: 0 0 124px; scroll-snap-align: start; }
 .item {
   display: flex; flex-direction: column; align-items: stretch; text-align: left; gap: 4px;
   border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius); padding: 8px;
@@ -76,9 +84,24 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .stage { grid-area: stage; display: flex; flex-direction: column; align-items: center; }
 .stage-frame {
   position: relative; height: min(calc(100vh - 190px), 860px); min-height: 420px; aspect-ratio: 3 / 5; max-width: 100%;
-  background: #efebe5; border-radius: 16px; overflow: hidden; display: grid; place-items: center;
+  background: linear-gradient(180deg, #f5f2ed 0%, #e9e4dc 80%, #ddd6cb 100%); border-radius: 16px; overflow: hidden; display: grid; place-items: center;
 }
-.stage-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; animation: fadein 0.18s ease-out; }
+.stage-img {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
+  transform-origin: 50% 95%; transition: transform 0.15s ease-out; animation: fadein 0.18s ease-out;
+}
+/* 身長の目盛り */
+.ruler { position: absolute; inset: 0; pointer-events: none; }
+.ruler-tick {
+  position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed rgba(0, 0, 0, 0.08);
+  font-size: 10px; color: rgba(0, 0, 0, 0.35); padding-left: 8px; line-height: 1; transform: translateY(-110%);
+}
+.ruler-tick::after { content: "cm"; }
+.ruler-head { position: absolute; left: 12%; right: 12%; border-top: 1.5px solid var(--sel); opacity: 0.7; transition: top 0.15s ease-out; }
+.room-controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.height-control { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.height-control input { width: 160px; accent-color: var(--ink); }
+.height-control output { min-width: 48px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .stage-img.dim { opacity: 0.45; }
 @keyframes fadein { from { opacity: 0.6; } to { opacity: 1; } }
 .stage-overlay { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 8px; text-align: center; padding: 24px; font-weight: 600; }
@@ -93,11 +116,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .outfit-total { margin: 6px 0 0; font-size: 13px; font-weight: 600; }
 
 .detail {
-  position: fixed; top: 0; right: 0; bottom: 0; width: min(380px, 100vw); background: var(--panel);
-  border-left: 1px solid var(--line); box-shadow: -12px 0 32px rgba(0, 0, 0, 0.08);
-  padding: 28px 24px 24px; overflow-y: auto; z-index: 20; animation: slidein 0.2s ease-out;
+  position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 22px 20px 20px; animation: slidein 0.2s ease-out;
 }
-@keyframes slidein { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes slidein { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 .detail-close { position: absolute; top: 12px; right: 12px; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); font-size: 18px; line-height: 1; }
 .detail-cat { margin: 0; font-size: 12px; letter-spacing: 0.15em; color: var(--muted); }
 .detail-name { margin: 4px 40px 6px 0; font-size: 19px; line-height: 1.4; }
@@ -119,11 +141,6 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .features { margin: 0 0 20px; padding-left: 18px; }
 .detail-actions { display: grid; gap: 10px; position: sticky; bottom: 0; background: var(--panel); padding-top: 8px; }
 
-/* 詳細パネルを開いても商品一覧が隠れないよう、右側を空ける */
-@media (min-width: 861px) {
-  .room.with-detail { padding-right: 404px; grid-template-columns: minmax(150px, 1fr) minmax(280px, 460px) minmax(150px, 1fr); }
-}
-
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: #fff;
   padding: 10px 18px; border-radius: 999px; font-size: 13px; z-index: 30; max-width: calc(100vw - 32px);
@@ -132,18 +149,20 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 @media (max-width: 860px) {
   .room {
-    grid-template-columns: 1fr; grid-template-areas: "head" "stage" "outer" "bottoms";
+    grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "stage" "outer" "bottoms";
     padding: 0 16px 24px; gap: 16px;
   }
   .room-header { margin-bottom: 0; }
   .stage-frame { height: 52vh; min-height: 320px; aspect-ratio: 3 / 5; width: auto; }
   .room-header { padding: 10px 0; }
   .model-note { margin-top: 6px; }
-  .rail-items { display: flex; overflow-x: auto; gap: 10px; padding-bottom: 6px; scroll-snap-type: x mandatory; }
-  .item { flex: 0 0 96px; scroll-snap-align: start; padding: 6px; }
+  .rail-items { gap: 10px; padding-bottom: 6px; }
+  .rail-items > .item { flex: 0 0 96px; padding: 6px; }
+  .height-control input { width: 120px; }
   .rail-title { margin-bottom: 6px; }
   .detail {
-    top: auto; left: 0; width: 100%; max-height: 78vh; border-left: none; border-top: 1px solid var(--line);
+    position: fixed; top: auto; left: 0; right: 0; bottom: 0; z-index: 20; overflow-y: auto; border-radius: 0;
+    width: 100%; max-height: 78vh; border-left: none; border-top: 1px solid var(--line);
     border-radius: 16px 16px 0 0; box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.12); animation: slideup 0.2s ease-out;
   }
   @keyframes slideup { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
